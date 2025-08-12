@@ -161,10 +161,13 @@ class ClaudeCodeInit(Component):
     in the execution context and automatically picked up by other components.
 
     ##### inPorts:
-    - model: The Claude model to use (e.g., "claude-3-5-sonnet-20241022").
+    - model: Model alias (e.g. 'sonnet', 'opus') or full name (e.g. 'claude-sonnet-4-20250514').
     - working_dir: Default working directory for Claude Code operations.
     - timeout: Default timeout in seconds for Claude Code commands.
-    - api_key: Optional ANTHROPIC_API_KEY override (will use environment if not provided).
+    - api_key: Optional ANTHROPIC_API_KEY override (will use OAuth/tokens if not provided).
+    - output_format: Output format for --print mode: 'text', 'json', or 'stream-json'.
+    - verbose: Enable verbose logging.
+    - debug: Enable debug mode.
 
     ##### outPorts:
     - success: Whether the initialization was successful.
@@ -175,6 +178,9 @@ class ClaudeCodeInit(Component):
     working_dir: InArg[str]
     timeout: InArg[int]
     api_key: InArg[str]
+    output_format: InArg[str]
+    verbose: InArg[bool]
+    debug: InArg[bool]
     
     success: OutArg[bool]
     config_summary: OutArg[str]
@@ -189,7 +195,10 @@ class ClaudeCodeInit(Component):
             ctx['claude_config'] = {
                 'model': self.model.value,
                 'working_dir': self.working_dir.value or os.getcwd(),
-                'timeout': self.timeout.value or 30,
+                'timeout': self.timeout.value or 120,
+                'output_format': self.output_format.value or 'text',
+                'verbose': self.verbose.value or False,
+                'debug': self.debug.value or False,
             }
             
             # Ensure Claude Code is available and properly configured
@@ -203,6 +212,9 @@ class ClaudeCodeInit(Component):
 Model: {config['model'] or 'default'}
 Working Directory: {config['working_dir']}
 Timeout: {config['timeout']} seconds
+Output Format: {config['output_format']}
+Verbose: {config['verbose']}
+Debug: {config['debug']}
 Claude Command: {ctx['claude_cmd']}"""
             
             self.config_summary.value = summary
@@ -214,26 +226,30 @@ Claude Command: {ctx['claude_cmd']}"""
 
 @xai_component
 class ClaudeCodeExecute(Component):
-    """Executes a Claude Code CLI command and captures the output.
+    """Executes Claude Code CLI with custom options and prompt.
     
-    Uses configuration from ClaudeCodeInit component. Requires ClaudeCodeInit to be
-    executed first in the workflow.
+    Uses configuration from ClaudeCodeInit component. Executes: claude [options] [prompt]
+    Uses --print mode for non-interactive execution.
 
     ##### inPorts:
-    - command: The claude command to execute (e.g., "chat", "help").
-    - args: Additional arguments to pass to the command.
-    - input_text: Optional text to provide as input to the command.
+    - prompt: The prompt to send to Claude.
+    - print_mode: Use --print for non-interactive output (default: True).
+    - continue_conversation: Use --continue to continue most recent conversation.
+    - resume_session: Session ID to resume with --resume.
+    - additional_options: Additional CLI options as string (e.g. "--verbose --debug").
 
     ##### outPorts:
-    - output: The stdout output from the command.
+    - output: The stdout output from Claude.
     - error: The stderr output from the command.
     - return_code: The exit code of the command.
     - execution_time: Time taken to execute the command in seconds.
     """
     
-    command: InCompArg[str]
-    args: InArg[str]
-    input_text: InArg[str]
+    prompt: InCompArg[str]
+    print_mode: InArg[bool]
+    continue_conversation: InArg[bool]
+    resume_session: InArg[str]
+    additional_options: InArg[str]
     
     output: OutArg[str]
     error: OutArg[str]
@@ -245,25 +261,52 @@ class ClaudeCodeExecute(Component):
         
         # Get shared configuration from context
         working_dir = get_claude_config(ctx, 'working_dir', os.getcwd())
-        timeout = get_claude_config(ctx, 'timeout', 30)
+        timeout = get_claude_config(ctx, 'timeout', 120)
+        model = get_claude_config(ctx, 'model')
+        output_format = get_claude_config(ctx, 'output_format', 'text')
+        verbose = get_claude_config(ctx, 'verbose', False)
+        debug = get_claude_config(ctx, 'debug', False)
         
         # Ensure claude command is available in context
         if 'claude_cmd' not in ctx:
             ensure_claude_code_available(ctx)
         
-        # Build the full command using the claude path from context
+        # Build command: claude [options] [prompt]
         cmd_parts = [ctx['claude_cmd']]
-        if self.command.value:
-            cmd_parts.extend(self.command.value.split())
-        if self.args.value:
-            cmd_parts.extend(self.args.value.split())
+        
+        # Add default permission mode for automation
+        cmd_parts.extend(['--permission-mode', 'bypassPermissions'])
+        
+        # Add current working directory to allowed directories
+        cmd_parts.extend(['--add-dir', working_dir])
+        
+        # Add options
+        if debug:
+            cmd_parts.append('--debug')
+        if verbose:
+            cmd_parts.append('--verbose')
+        if model:
+            cmd_parts.extend(['--model', model])
+        if self.print_mode.value is not False:  # Default to True
+            cmd_parts.append('--print')
+            if output_format != 'text':
+                cmd_parts.extend(['--output-format', output_format])
+        if self.continue_conversation.value:
+            cmd_parts.append('--continue')
+        if self.resume_session.value:
+            cmd_parts.extend(['--resume', self.resume_session.value])
+        if self.additional_options.value:
+            cmd_parts.extend(self.additional_options.value.split())
+        
+        # Add prompt if provided
+        if self.prompt.value:
+            cmd_parts.append(self.prompt.value)
         
         start_time = time.time()
         
         try:
             result = subprocess.run(
                 cmd_parts,
-                input=self.input_text.value if self.input_text.value else None,
                 cwd=working_dir,
                 timeout=timeout,
                 capture_output=True,
@@ -380,26 +423,22 @@ class ClaudeCodeAnalyze(Component):
 
 @xai_component
 class ClaudeCodeChat(Component):
-    """Executes a Claude Code chat command with a specific prompt.
+    """Simple chat interface to Claude Code CLI using --print mode.
     
-    Uses configuration from ClaudeCodeInit component. Requires ClaudeCodeInit to be
-    executed first in the workflow.
+    Simplified wrapper around ClaudeCodeExecute for basic chat functionality.
+    Uses configuration from ClaudeCodeInit component.
 
     ##### inPorts:
     - prompt: The prompt/question to send to Claude.
 
     ##### outPorts:
     - response: Claude's response to the prompt.
-    - tokens_used: Total tokens used in the interaction.
-    - cost: Cost of the interaction.
     - success: Whether the chat was successful.
     """
     
     prompt: InCompArg[str]
     
     response: OutArg[str]
-    tokens_used: OutArg[int]
-    cost: OutArg[float]
     success: OutArg[bool]
 
     def execute(self, ctx) -> None:
@@ -407,20 +446,35 @@ class ClaudeCodeChat(Component):
         model = get_claude_config(ctx, 'model')
         working_dir = get_claude_config(ctx, 'working_dir', os.getcwd())
         timeout = get_claude_config(ctx, 'timeout', 120)
+        output_format = get_claude_config(ctx, 'output_format', 'text')
+        verbose = get_claude_config(ctx, 'verbose', False)
+        debug = get_claude_config(ctx, 'debug', False)
         
         # Ensure claude command is available in context
         if 'claude_cmd' not in ctx:
             ensure_claude_code_available(ctx)
         
-        # Build command using the claude path from context
-        cmd_parts = [ctx['claude_cmd'], "chat"]
+        # Build command: claude --print --permission-mode bypassPermissions [options] "prompt"
+        cmd_parts = [ctx['claude_cmd'], '--print', '--permission-mode', 'bypassPermissions']
+        
+        # Add current working directory to allowed directories
+        cmd_parts.extend(['--add-dir', working_dir])
+        
+        if debug:
+            cmd_parts.append('--debug')
+        if verbose:
+            cmd_parts.append('--verbose')
         if model:
-            cmd_parts.extend(["--model", model])
+            cmd_parts.extend(['--model', model])
+        if output_format != 'text':
+            cmd_parts.extend(['--output-format', output_format])
+        
+        # Add the prompt
+        cmd_parts.append(self.prompt.value)
         
         try:
             result = subprocess.run(
                 cmd_parts,
-                input=self.prompt.value,
                 cwd=working_dir,
                 capture_output=True,
                 text=True,
@@ -430,235 +484,166 @@ class ClaudeCodeChat(Component):
             self.response.value = result.stdout
             self.success.value = result.returncode == 0
             
-            # Extract token and cost info
-            output_text = result.stdout
-            token_match = re.search(r'(\d+)\s*total\s*tokens', output_text, re.IGNORECASE)
-            self.tokens_used.value = int(token_match.group(1)) if token_match else 0
-            
-            cost_match = re.search(r'cost:\s*\$?([\d.]+)', output_text, re.IGNORECASE)
-            self.cost.value = float(cost_match.group(1)) if cost_match else 0.0
-            
         except Exception as e:
-            self.response.value = str(e)
+            self.response.value = f"Error: {str(e)}"
             self.success.value = False
-            self.tokens_used.value = 0
-            self.cost.value = 0.0
 
 
 @xai_component
-class ClaudeCodeFileEdit(Component):
-    """Executes a Claude Code command to edit a specific file.
+class ClaudeCodeConfig(Component):
+    """Manages Claude Code configuration using 'claude config' command.
     
-    Uses configuration from ClaudeCodeInit component. Requires ClaudeCodeInit to be
-    executed first in the workflow.
+    Uses the real 'claude config' command to get/set configuration values.
 
     ##### inPorts:
-    - file_path: Path to the file to edit.
-    - instruction: Instruction for how to edit the file.
+    - action: Action to perform: 'get' or 'set'.
+    - key: Configuration key (e.g. 'theme', 'model').
+    - value: Value to set (only used with 'set' action).
+    - global_config: Use -g flag for global configuration.
 
     ##### outPorts:
-    - success: Whether the edit was successful.
-    - changes_made: Description of changes made.
-    - tokens_used: Tokens used for the edit.
-    - cost: Cost of the edit operation.
+    - success: Whether the config operation was successful.
+    - result: The result of the config operation.
     """
     
-    file_path: InCompArg[str]
-    instruction: InCompArg[str]
+    action: InCompArg[str]
+    key: InCompArg[str]
+    value: InArg[str]
+    global_config: InArg[bool]
     
     success: OutArg[bool]
-    changes_made: OutArg[str]
-    tokens_used: OutArg[int]
-    cost: OutArg[float]
+    result: OutArg[str]
 
     def execute(self, ctx) -> None:
         # Get shared configuration from context
-        model = get_claude_config(ctx, 'model')
-        timeout = get_claude_config(ctx, 'timeout', 120)
+        working_dir = get_claude_config(ctx, 'working_dir', os.getcwd())
+        timeout = get_claude_config(ctx, 'timeout', 30)
         
         # Ensure claude command is available in context
         if 'claude_cmd' not in ctx:
             ensure_claude_code_available(ctx)
         
-        # Combine file path and instruction into a prompt
-        prompt = f"Edit the file {self.file_path.value}: {self.instruction.value}"
+        # Build command: claude config [action] [options] [key] [value]
+        cmd_parts = [ctx['claude_cmd'], 'config']
         
-        # Build command using the claude path from context
-        cmd_parts = [ctx['claude_cmd'], "chat"]
-        if model:
-            cmd_parts.extend(["--model", model])
+        if self.action.value:
+            cmd_parts.append(self.action.value)
+        
+        if self.global_config.value:
+            cmd_parts.append('-g')
+            
+        if self.key.value:
+            cmd_parts.append(self.key.value)
+            
+        if self.action.value == 'set' and self.value.value:
+            cmd_parts.append(self.value.value)
         
         try:
             result = subprocess.run(
                 cmd_parts,
-                input=prompt,
+                cwd=working_dir,
                 capture_output=True,
                 text=True,
                 timeout=timeout
             )
             
             self.success.value = result.returncode == 0
-            self.changes_made.value = result.stdout
-            
-            # Extract usage information
-            output_text = result.stdout
-            token_match = re.search(r'(\d+)\s*total\s*tokens', output_text, re.IGNORECASE)
-            self.tokens_used.value = int(token_match.group(1)) if token_match else 0
-            
-            cost_match = re.search(r'cost:\s*\$?([\d.]+)', output_text, re.IGNORECASE)
-            self.cost.value = float(cost_match.group(1)) if cost_match else 0.0
+            self.result.value = result.stdout if result.stdout else result.stderr
             
         except Exception as e:
             self.success.value = False
-            self.changes_made.value = f"Error: {str(e)}"
-            self.tokens_used.value = 0
-            self.cost.value = 0.0
+            self.result.value = f"Error: {str(e)}"
 
 
 @xai_component
-class ClaudeCodeBatch(Component):
-    """Executes multiple Claude Code commands in sequence and aggregates results.
-    
-    Uses configuration from ClaudeCodeInit component. Requires ClaudeCodeInit to be
-    executed first in the workflow.
+class ClaudeCodeUpdate(Component):
+    """Updates Claude Code to the latest version using 'claude update' command.
 
     ##### inPorts:
-    - commands: List of command strings to execute.
+    - check_only: Only check for updates, don't install.
 
     ##### outPorts:
-    - results: List of results from each command.
-    - total_tokens: Total tokens used across all commands.
-    - total_cost: Total cost across all commands.
-    - success_count: Number of successful commands.
-    - failed_count: Number of failed commands.
+    - success: Whether the update operation was successful.
+    - result: The result of the update operation.
+    - update_available: Whether an update is available.
     """
     
-    commands: InCompArg[list]
+    check_only: InArg[bool]
     
-    results: OutArg[list]
-    total_tokens: OutArg[int]
-    total_cost: OutArg[float]
-    success_count: OutArg[int]
-    failed_count: OutArg[int]
+    success: OutArg[bool]
+    result: OutArg[str]
+    update_available: OutArg[bool]
 
     def execute(self, ctx) -> None:
         # Get shared configuration from context
         working_dir = get_claude_config(ctx, 'working_dir', os.getcwd())
-        timeout = get_claude_config(ctx, 'timeout', 120)
+        timeout = get_claude_config(ctx, 'timeout', 60)
         
         # Ensure claude command is available in context
         if 'claude_cmd' not in ctx:
             ensure_claude_code_available(ctx)
         
-        results = []
-        total_tokens = 0
-        total_cost = 0.0
-        success_count = 0
-        failed_count = 0
+        # Build command: claude update
+        cmd_parts = [ctx['claude_cmd'], 'update']
         
-        for i, command in enumerate(self.commands.value):
-            try:
-                cmd_parts = [ctx['claude_cmd']] + command.split()
-                
-                result = subprocess.run(
-                    cmd_parts,
-                    cwd=working_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout
-                )
-                
-                # Parse tokens and cost from output
-                output_text = result.stdout
-                token_match = re.search(r'(\d+)\s*total\s*tokens', output_text, re.IGNORECASE)
-                tokens = int(token_match.group(1)) if token_match else 0
-                
-                cost_match = re.search(r'cost:\s*\$?([\d.]+)', output_text, re.IGNORECASE)
-                cost = float(cost_match.group(1)) if cost_match else 0.0
-                
-                command_result = {
-                    'command': command,
-                    'success': result.returncode == 0,
-                    'output': result.stdout,
-                    'error': result.stderr,
-                    'tokens': tokens,
-                    'cost': cost
-                }
-                
-                results.append(command_result)
-                total_tokens += tokens
-                total_cost += cost
-                
-                if result.returncode == 0:
-                    success_count += 1
-                else:
-                    failed_count += 1
-                    
-            except Exception as e:
-                command_result = {
-                    'command': command,
-                    'success': False,
-                    'output': '',
-                    'error': str(e),
-                    'tokens': 0,
-                    'cost': 0.0
-                }
-                results.append(command_result)
-                failed_count += 1
-        
-        self.results.value = results
-        self.total_tokens.value = total_tokens
-        self.total_cost.value = total_cost
-        self.success_count.value = success_count
-        self.failed_count.value = failed_count
+        try:
+            result = subprocess.run(
+                cmd_parts,
+                cwd=working_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            
+            self.success.value = result.returncode == 0
+            output = result.stdout if result.stdout else result.stderr
+            self.result.value = output
+            
+            # Check if update is available by looking at output
+            self.update_available.value = 'available' in output.lower() or 'update' in output.lower()
+            
+        except Exception as e:
+            self.success.value = False
+            self.result.value = f"Error: {str(e)}"
+            self.update_available.value = False
 
 
 @xai_component
-class ClaudeCodeUsageSummary(Component):
-    """Summarizes usage statistics from multiple Claude Code operations.
-
-    ##### inPorts:
-    - results: List of results from Claude Code operations.
+class ClaudeCodeDoctor(Component):
+    """Runs Claude Code health check using 'claude doctor' command.
 
     ##### outPorts:
-    - summary: Text summary of usage statistics.
-    - total_operations: Total number of operations.
-    - successful_operations: Number of successful operations.
-    - total_tokens: Total tokens used.
-    - total_cost: Total cost incurred.
-    - average_cost_per_operation: Average cost per operation.
+    - success: Whether Claude Code is healthy.
+    - result: The health check results.
     """
     
-    results: InCompArg[list]
-    
-    summary: OutArg[str]
-    total_operations: OutArg[int]
-    successful_operations: OutArg[int]
-    total_tokens: OutArg[int]
-    total_cost: OutArg[float]
-    average_cost_per_operation: OutArg[float]
+    success: OutArg[bool]
+    result: OutArg[str]
 
     def execute(self, ctx) -> None:
-        results = self.results.value or []
+        # Get shared configuration from context
+        working_dir = get_claude_config(ctx, 'working_dir', os.getcwd())
+        timeout = get_claude_config(ctx, 'timeout', 30)
         
-        total_ops = len(results)
-        successful_ops = sum(1 for r in results if r.get('success', False))
-        total_tokens = sum(r.get('tokens', 0) for r in results)
-        total_cost = sum(r.get('cost', 0.0) for r in results)
-        avg_cost = total_cost / total_ops if total_ops > 0 else 0.0
+        # Ensure claude command is available in context
+        if 'claude_cmd' not in ctx:
+            ensure_claude_code_available(ctx)
         
-        summary = f"""Claude Code Usage Summary:
-Total Operations: {total_ops}
-Successful: {successful_ops}
-Failed: {total_ops - successful_ops}
-Total Tokens Used: {total_tokens:,}
-Total Cost: ${total_cost:.4f}
-Average Cost per Operation: ${avg_cost:.4f}
-Success Rate: {(successful_ops/total_ops*100):.1f}%"""
+        # Build command: claude doctor
+        cmd_parts = [ctx['claude_cmd'], 'doctor']
         
-        self.summary.value = summary
-        self.total_operations.value = total_ops
-        self.successful_operations.value = successful_ops
-        self.total_tokens.value = total_tokens
-        self.total_cost.value = total_cost
-        self.average_cost_per_operation.value = avg_cost
+        try:
+            result = subprocess.run(
+                cmd_parts,
+                cwd=working_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            
+            self.success.value = result.returncode == 0
+            self.result.value = result.stdout if result.stdout else result.stderr
+            
+        except Exception as e:
+            self.success.value = False
+            self.result.value = f"Error: {str(e)}"
