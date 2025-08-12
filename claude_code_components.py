@@ -2,9 +2,121 @@ import os
 import subprocess
 import json
 import re
+import shutil
 from typing import Dict, List, Any, Optional
 
 from xai_components.base import InArg, OutArg, InCompArg, Component, BaseComponent, secret, xai_component
+
+
+def ensure_claude_code_available():
+    """
+    Ensures Claude Code CLI is installed and ANTHROPIC_API_KEY is set.
+    Installs Claude Code to ~/.claude_code/ to avoid conflicts with other installations.
+    
+    Raises:
+        RuntimeError: If Claude Code is not installed or API key is missing.
+        
+    Returns:
+        bool: True if everything is properly configured.
+    """
+    # Check if ANTHROPIC_API_KEY is set
+    if not os.environ.get('ANTHROPIC_API_KEY'):
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY environment variable is not set. "
+            "Please set your Anthropic API key before using Claude Code components."
+        )
+    
+    # Define local installation directory
+    home_dir = os.path.expanduser("~")
+    claude_dir = os.path.join(home_dir, ".claude_code")
+    node_modules_dir = os.path.join(claude_dir, "node_modules")
+    claude_bin = os.path.join(node_modules_dir, ".bin", "claude")
+    
+    # Check if claude command is available in local installation first, then global PATH
+    claude_cmd = None
+    if os.path.exists(claude_bin) and os.access(claude_bin, os.X_OK):
+        claude_cmd = claude_bin
+    else:
+        global_claude = shutil.which('claude')
+        if global_claude:
+            # Test if global installation actually works
+            try:
+                test_result = subprocess.run(
+                    [global_claude, '--version'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if test_result.returncode == 0:
+                    claude_cmd = global_claude
+            except:
+                # Global installation is broken, ignore it
+                pass
+    
+    if not claude_cmd:
+        # Attempt to install claude-code locally
+        try:
+            print("Claude Code CLI not found. Installing to ~/.claude_code/...")
+            
+            # Create directory if it doesn't exist
+            os.makedirs(claude_dir, exist_ok=True)
+            
+            # Install locally using npm
+            result = subprocess.run(
+                ['npm', 'install', '@anthropic-ai/claude-code'],
+                cwd=claude_dir,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            print("Claude Code CLI installed successfully to ~/.claude_code/")
+            
+            # Verify installation
+            if not (os.path.exists(claude_bin) and os.access(claude_bin, os.X_OK)):
+                raise RuntimeError(
+                    "Failed to install Claude Code CLI. Please install manually: "
+                    "npm install -g @anthropic-ai/claude-code"
+                )
+            claude_cmd = claude_bin
+                
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Failed to install Claude Code CLI: {e.stderr}. "
+                "Please ensure npm is installed and try manually: "
+                "npm install -g @anthropic-ai/claude-code"
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "npm command not found. Please install Node.js and npm, then try manually: "
+                "npm install -g @anthropic-ai/claude-code"
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Error during Claude Code installation: {str(e)}. "
+                "Please install manually: npm install -g @anthropic-ai/claude-code"
+            )
+    
+    # Verify claude command works
+    try:
+        result = subprocess.run(
+            [claude_cmd, '--version'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Claude Code CLI is installed but not working properly: {result.stderr}"
+            )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Claude Code CLI is not responding. Please check your installation.")
+    except Exception as e:
+        raise RuntimeError(f"Error verifying Claude Code CLI: {str(e)}")
+    
+    # Store the claude command path for use in components
+    os.environ['_CLAUDE_CODE_PATH'] = claude_cmd
+    
+    return True
 
 
 @xai_component
@@ -39,8 +151,12 @@ class ClaudeCodeExecute(Component):
     def execute(self, ctx) -> None:
         import time
         
-        # Build the full command
-        cmd_parts = ["claude"]
+        # Ensure Claude Code is available and properly configured
+        ensure_claude_code_available()
+        
+        # Build the full command using the stored claude path
+        claude_cmd = os.environ.get('_CLAUDE_CODE_PATH', 'claude')
+        cmd_parts = [claude_cmd]
         if self.command.value:
             cmd_parts.extend(self.command.value.split())
         if self.args.value:
@@ -116,6 +232,9 @@ class ClaudeCodeAnalyze(Component):
     success: OutArg[bool]
 
     def execute(self, ctx) -> None:
+        # Ensure Claude Code is available and properly configured
+        ensure_claude_code_available()
+        
         output_text = self.output.value or ""
         error_text = self.error.value or ""
         
@@ -195,8 +314,12 @@ class ClaudeCodeChat(Component):
     success: OutArg[bool]
 
     def execute(self, ctx) -> None:
-        # Build command
-        cmd_parts = ["claude", "chat"]
+        # Ensure Claude Code is available and properly configured
+        ensure_claude_code_available()
+        
+        # Build command using the stored claude path
+        claude_cmd = os.environ.get('_CLAUDE_CODE_PATH', 'claude')
+        cmd_parts = [claude_cmd, "chat"]
         if self.model.value:
             cmd_parts.extend(["--model", self.model.value])
         
@@ -256,10 +379,15 @@ class ClaudeCodeFileEdit(Component):
     cost: OutArg[float]
 
     def execute(self, ctx) -> None:
+        # Ensure Claude Code is available and properly configured
+        ensure_claude_code_available()
+        
         # Combine file path and instruction into a prompt
         prompt = f"Edit the file {self.file_path.value}: {self.instruction.value}"
         
-        cmd_parts = ["claude", "chat"]
+        # Build command using the stored claude path
+        claude_cmd = os.environ.get('_CLAUDE_CODE_PATH', 'claude')
+        cmd_parts = [claude_cmd, "chat"]
         if self.model.value:
             cmd_parts.extend(["--model", self.model.value])
         
@@ -316,6 +444,9 @@ class ClaudeCodeBatch(Component):
     failed_count: OutArg[int]
 
     def execute(self, ctx) -> None:
+        # Ensure Claude Code is available and properly configured
+        ensure_claude_code_available()
+        
         results = []
         total_tokens = 0
         total_cost = 0.0
@@ -324,9 +455,11 @@ class ClaudeCodeBatch(Component):
         
         cwd = self.working_dir.value if self.working_dir.value else os.getcwd()
         
+        claude_cmd = os.environ.get('_CLAUDE_CODE_PATH', 'claude')
+        
         for i, command in enumerate(self.commands.value):
             try:
-                cmd_parts = ["claude"] + command.split()
+                cmd_parts = [claude_cmd] + command.split()
                 
                 result = subprocess.run(
                     cmd_parts,
