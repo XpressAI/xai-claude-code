@@ -63,10 +63,9 @@ def ensure_claude_code_available(ctx):
             # Create directory if it doesn't exist
             os.makedirs(claude_dir, exist_ok=True)
             
-            # Install locally using npm
+            # Install locally using npm with --prefix to specify the directory
             result = subprocess.run(
-                ['npm', 'install', '@anthropic-ai/claude-code'],
-                cwd=claude_dir,
+                ['npm', 'install', '--prefix', claude_dir, '@anthropic-ai/claude-code'],
                 capture_output=True,
                 text=True,
                 check=True
