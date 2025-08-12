@@ -12,7 +12,6 @@ setup(
     packages=find_packages(),
     py_modules=["claude_code_components"],
     install_requires=[
-        "xai-components>=0.1.0",
     ],
     python_requires=">=3.7",
     classifiers=[
