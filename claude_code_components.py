@@ -8,10 +8,14 @@ from typing import Dict, List, Any, Optional
 from xai_components.base import InArg, OutArg, InCompArg, Component, BaseComponent, secret, xai_component
 
 
-def ensure_claude_code_available():
+def ensure_claude_code_available(ctx):
     """
     Ensures Claude Code CLI is installed and ANTHROPIC_API_KEY is set.
     Installs Claude Code to ~/.claude_code/ to avoid conflicts with other installations.
+    Stores the claude command path in the provided context for thread safety.
+    
+    Args:
+        ctx: Component execution context to store claude command path.
     
     Raises:
         RuntimeError: If Claude Code is not installed or API key is missing.
@@ -113,8 +117,8 @@ def ensure_claude_code_available():
     except Exception as e:
         raise RuntimeError(f"Error verifying Claude Code CLI: {str(e)}")
     
-    # Store the claude command path for use in components
-    os.environ['_CLAUDE_CODE_PATH'] = claude_cmd
+    # Store the claude command path in the context for thread safety
+    ctx['claude_cmd'] = claude_cmd
     
     return True
 
@@ -152,11 +156,10 @@ class ClaudeCodeExecute(Component):
         import time
         
         # Ensure Claude Code is available and properly configured
-        ensure_claude_code_available()
+        ensure_claude_code_available(ctx)
         
-        # Build the full command using the stored claude path
-        claude_cmd = os.environ.get('_CLAUDE_CODE_PATH', 'claude')
-        cmd_parts = [claude_cmd]
+        # Build the full command using the claude path from context
+        cmd_parts = [ctx['claude_cmd']]
         if self.command.value:
             cmd_parts.extend(self.command.value.split())
         if self.args.value:
@@ -233,7 +236,7 @@ class ClaudeCodeAnalyze(Component):
 
     def execute(self, ctx) -> None:
         # Ensure Claude Code is available and properly configured
-        ensure_claude_code_available()
+        ensure_claude_code_available(ctx)
         
         output_text = self.output.value or ""
         error_text = self.error.value or ""
@@ -315,11 +318,10 @@ class ClaudeCodeChat(Component):
 
     def execute(self, ctx) -> None:
         # Ensure Claude Code is available and properly configured
-        ensure_claude_code_available()
+        ensure_claude_code_available(ctx)
         
-        # Build command using the stored claude path
-        claude_cmd = os.environ.get('_CLAUDE_CODE_PATH', 'claude')
-        cmd_parts = [claude_cmd, "chat"]
+        # Build command using the claude path from context
+        cmd_parts = [ctx['claude_cmd'], "chat"]
         if self.model.value:
             cmd_parts.extend(["--model", self.model.value])
         
@@ -380,14 +382,13 @@ class ClaudeCodeFileEdit(Component):
 
     def execute(self, ctx) -> None:
         # Ensure Claude Code is available and properly configured
-        ensure_claude_code_available()
+        ensure_claude_code_available(ctx)
         
         # Combine file path and instruction into a prompt
         prompt = f"Edit the file {self.file_path.value}: {self.instruction.value}"
         
-        # Build command using the stored claude path
-        claude_cmd = os.environ.get('_CLAUDE_CODE_PATH', 'claude')
-        cmd_parts = [claude_cmd, "chat"]
+        # Build command using the claude path from context
+        cmd_parts = [ctx['claude_cmd'], "chat"]
         if self.model.value:
             cmd_parts.extend(["--model", self.model.value])
         
@@ -445,7 +446,7 @@ class ClaudeCodeBatch(Component):
 
     def execute(self, ctx) -> None:
         # Ensure Claude Code is available and properly configured
-        ensure_claude_code_available()
+        ensure_claude_code_available(ctx)
         
         results = []
         total_tokens = 0
@@ -455,11 +456,9 @@ class ClaudeCodeBatch(Component):
         
         cwd = self.working_dir.value if self.working_dir.value else os.getcwd()
         
-        claude_cmd = os.environ.get('_CLAUDE_CODE_PATH', 'claude')
-        
         for i, command in enumerate(self.commands.value):
             try:
-                cmd_parts = [claude_cmd] + command.split()
+                cmd_parts = [ctx['claude_cmd']] + command.split()
                 
                 result = subprocess.run(
                     cmd_parts,
