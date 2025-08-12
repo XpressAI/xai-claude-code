@@ -1,11 +1,9 @@
 import os
 import subprocess
-import json
 import re
 import shutil
-from typing import Dict, List, Any, Optional
 
-from xai_components.base import InArg, OutArg, InCompArg, Component, BaseComponent, secret, xai_component
+from xai_components.base import InArg, OutArg, InCompArg, Component, xai_component
 
 
 def ensure_claude_code_available(ctx):
@@ -123,16 +121,108 @@ def ensure_claude_code_available(ctx):
     return True
 
 
+def get_claude_config(ctx, key=None, default=None):
+    """
+    Retrieves Claude Code configuration from context.
+    
+    Args:
+        ctx: Component execution context.
+        key: Specific config key to retrieve, or None for entire config.
+        default: Default value if key is not found.
+        
+    Returns:
+        Configuration value or entire config dict.
+        
+    Raises:
+        RuntimeError: If no configuration found and no default provided.
+    """
+    if 'claude_config' not in ctx:
+        if default is not None:
+            return default
+        raise RuntimeError(
+            "Claude Code configuration not found in context. "
+            "Please add a ClaudeCodeInit component before other Claude Code components."
+        )
+    
+    config = ctx['claude_config']
+    
+    if key is None:
+        return config
+    
+    return config.get(key, default)
+
+
+@xai_component
+class ClaudeCodeInit(Component):
+    """Initializes Claude Code configuration that will be shared across all Claude components.
+    
+    This component should be used once at the beginning of a workflow to set common
+    configuration values that other Claude Code components will use. Values are stored
+    in the execution context and automatically picked up by other components.
+
+    ##### inPorts:
+    - model: The Claude model to use (e.g., "claude-3-5-sonnet-20241022").
+    - working_dir: Default working directory for Claude Code operations.
+    - timeout: Default timeout in seconds for Claude Code commands.
+    - api_key: Optional ANTHROPIC_API_KEY override (will use environment if not provided).
+
+    ##### outPorts:
+    - success: Whether the initialization was successful.
+    - config_summary: Summary of the configuration that was set.
+    """
+    
+    model: InArg[str]
+    working_dir: InArg[str]
+    timeout: InArg[int]
+    api_key: InArg[str]
+    
+    success: OutArg[bool]
+    config_summary: OutArg[str]
+
+    def execute(self, ctx) -> None:
+        try:
+            # Set API key in environment if provided
+            if self.api_key.value:
+                os.environ['ANTHROPIC_API_KEY'] = self.api_key.value
+            
+            # Store configuration in context
+            ctx['claude_config'] = {
+                'model': self.model.value,
+                'working_dir': self.working_dir.value or os.getcwd(),
+                'timeout': self.timeout.value or 30,
+            }
+            
+            # Ensure Claude Code is available and properly configured
+            ensure_claude_code_available(ctx)
+            
+            self.success.value = True
+            
+            # Create configuration summary
+            config = ctx['claude_config']
+            summary = f"""Claude Code Configuration:
+Model: {config['model'] or 'default'}
+Working Directory: {config['working_dir']}
+Timeout: {config['timeout']} seconds
+Claude Command: {ctx['claude_cmd']}"""
+            
+            self.config_summary.value = summary
+            
+        except Exception as e:
+            self.success.value = False
+            self.config_summary.value = f"Initialization failed: {str(e)}"
+
+
 @xai_component
 class ClaudeCodeExecute(Component):
     """Executes a Claude Code CLI command and captures the output.
+    
+    Uses configuration from ClaudeCodeInit component. Requires ClaudeCodeInit to be
+    executed first in the workflow.
 
     ##### inPorts:
-    - command: The claude command to execute (e.g., "claude chat", "claude help").
+    - command: The claude command to execute (e.g., "chat", "help").
     - args: Additional arguments to pass to the command.
     - input_text: Optional text to provide as input to the command.
-    - working_dir: Working directory to execute the command in.
-    - timeout: Timeout in seconds for the command execution.
 
     ##### outPorts:
     - output: The stdout output from the command.
@@ -144,8 +234,6 @@ class ClaudeCodeExecute(Component):
     command: InCompArg[str]
     args: InArg[str]
     input_text: InArg[str]
-    working_dir: InArg[str]
-    timeout: InArg[int]
     
     output: OutArg[str]
     error: OutArg[str]
@@ -155,8 +243,9 @@ class ClaudeCodeExecute(Component):
     def execute(self, ctx) -> None:
         import time
         
-        # Ensure Claude Code is available and properly configured
-        ensure_claude_code_available(ctx)
+        # Get shared configuration from context
+        working_dir = get_claude_config(ctx, 'working_dir', os.getcwd())
+        timeout = get_claude_config(ctx, 'timeout', 30)
         
         # Build the full command using the claude path from context
         cmd_parts = [ctx['claude_cmd']]
@@ -165,19 +254,13 @@ class ClaudeCodeExecute(Component):
         if self.args.value:
             cmd_parts.extend(self.args.value.split())
         
-        # Set working directory
-        cwd = self.working_dir.value if self.working_dir.value else os.getcwd()
-        
-        # Set timeout (default 30 seconds)
-        timeout = self.timeout.value if self.timeout.value else 30
-        
         start_time = time.time()
         
         try:
             result = subprocess.run(
                 cmd_parts,
                 input=self.input_text.value if self.input_text.value else None,
-                cwd=cwd,
+                cwd=working_dir,
                 timeout=timeout,
                 capture_output=True,
                 text=True
@@ -229,7 +312,7 @@ class ClaudeCodeAnalyze(Component):
     input_tokens: OutArg[int]
     output_tokens: OutArg[int]
     total_cost: OutArg[float]
-    files_edited: OutArg[List[str]]
+    files_edited: OutArg[list]
     edit_summary: OutArg[str]
     has_errors: OutArg[bool]
     success: OutArg[bool]
@@ -294,11 +377,12 @@ class ClaudeCodeAnalyze(Component):
 @xai_component
 class ClaudeCodeChat(Component):
     """Executes a Claude Code chat command with a specific prompt.
+    
+    Uses configuration from ClaudeCodeInit component. Requires ClaudeCodeInit to be
+    executed first in the workflow.
 
     ##### inPorts:
     - prompt: The prompt/question to send to Claude.
-    - model: Optional model to use (e.g., "claude-3-5-sonnet-20241022").
-    - working_dir: Working directory for the chat session.
 
     ##### outPorts:
     - response: Claude's response to the prompt.
@@ -308,8 +392,6 @@ class ClaudeCodeChat(Component):
     """
     
     prompt: InCompArg[str]
-    model: InArg[str]
-    working_dir: InArg[str]
     
     response: OutArg[str]
     tokens_used: OutArg[int]
@@ -317,24 +399,24 @@ class ClaudeCodeChat(Component):
     success: OutArg[bool]
 
     def execute(self, ctx) -> None:
-        # Ensure Claude Code is available and properly configured
-        ensure_claude_code_available(ctx)
+        # Get shared configuration from context
+        model = get_claude_config(ctx, 'model')
+        working_dir = get_claude_config(ctx, 'working_dir', os.getcwd())
+        timeout = get_claude_config(ctx, 'timeout', 120)
         
         # Build command using the claude path from context
         cmd_parts = [ctx['claude_cmd'], "chat"]
-        if self.model.value:
-            cmd_parts.extend(["--model", self.model.value])
-        
-        cwd = self.working_dir.value if self.working_dir.value else os.getcwd()
+        if model:
+            cmd_parts.extend(["--model", model])
         
         try:
             result = subprocess.run(
                 cmd_parts,
                 input=self.prompt.value,
-                cwd=cwd,
+                cwd=working_dir,
                 capture_output=True,
                 text=True,
-                timeout=120
+                timeout=timeout
             )
             
             self.response.value = result.stdout
@@ -358,11 +440,13 @@ class ClaudeCodeChat(Component):
 @xai_component
 class ClaudeCodeFileEdit(Component):
     """Executes a Claude Code command to edit a specific file.
+    
+    Uses configuration from ClaudeCodeInit component. Requires ClaudeCodeInit to be
+    executed first in the workflow.
 
     ##### inPorts:
     - file_path: Path to the file to edit.
     - instruction: Instruction for how to edit the file.
-    - model: Optional model to use.
 
     ##### outPorts:
     - success: Whether the edit was successful.
@@ -373,7 +457,6 @@ class ClaudeCodeFileEdit(Component):
     
     file_path: InCompArg[str]
     instruction: InCompArg[str]
-    model: InArg[str]
     
     success: OutArg[bool]
     changes_made: OutArg[str]
@@ -381,16 +464,17 @@ class ClaudeCodeFileEdit(Component):
     cost: OutArg[float]
 
     def execute(self, ctx) -> None:
-        # Ensure Claude Code is available and properly configured
-        ensure_claude_code_available(ctx)
+        # Get shared configuration from context
+        model = get_claude_config(ctx, 'model')
+        timeout = get_claude_config(ctx, 'timeout', 120)
         
         # Combine file path and instruction into a prompt
         prompt = f"Edit the file {self.file_path.value}: {self.instruction.value}"
         
         # Build command using the claude path from context
         cmd_parts = [ctx['claude_cmd'], "chat"]
-        if self.model.value:
-            cmd_parts.extend(["--model", self.model.value])
+        if model:
+            cmd_parts.extend(["--model", model])
         
         try:
             result = subprocess.run(
@@ -398,7 +482,7 @@ class ClaudeCodeFileEdit(Component):
                 input=prompt,
                 capture_output=True,
                 text=True,
-                timeout=120
+                timeout=timeout
             )
             
             self.success.value = result.returncode == 0
@@ -422,10 +506,12 @@ class ClaudeCodeFileEdit(Component):
 @xai_component
 class ClaudeCodeBatch(Component):
     """Executes multiple Claude Code commands in sequence and aggregates results.
+    
+    Uses configuration from ClaudeCodeInit component. Requires ClaudeCodeInit to be
+    executed first in the workflow.
 
     ##### inPorts:
     - commands: List of command strings to execute.
-    - working_dir: Working directory for all commands.
 
     ##### outPorts:
     - results: List of results from each command.
@@ -435,18 +521,18 @@ class ClaudeCodeBatch(Component):
     - failed_count: Number of failed commands.
     """
     
-    commands: InCompArg[List[str]]
-    working_dir: InArg[str]
+    commands: InCompArg[list]
     
-    results: OutArg[List[Dict[str, Any]]]
+    results: OutArg[list]
     total_tokens: OutArg[int]
     total_cost: OutArg[float]
     success_count: OutArg[int]
     failed_count: OutArg[int]
 
     def execute(self, ctx) -> None:
-        # Ensure Claude Code is available and properly configured
-        ensure_claude_code_available(ctx)
+        # Get shared configuration from context
+        working_dir = get_claude_config(ctx, 'working_dir', os.getcwd())
+        timeout = get_claude_config(ctx, 'timeout', 120)
         
         results = []
         total_tokens = 0
@@ -454,18 +540,16 @@ class ClaudeCodeBatch(Component):
         success_count = 0
         failed_count = 0
         
-        cwd = self.working_dir.value if self.working_dir.value else os.getcwd()
-        
         for i, command in enumerate(self.commands.value):
             try:
                 cmd_parts = [ctx['claude_cmd']] + command.split()
                 
                 result = subprocess.run(
                     cmd_parts,
-                    cwd=cwd,
+                    cwd=working_dir,
                     capture_output=True,
                     text=True,
-                    timeout=120
+                    timeout=timeout
                 )
                 
                 # Parse tokens and cost from output
@@ -529,7 +613,7 @@ class ClaudeCodeUsageSummary(Component):
     - average_cost_per_operation: Average cost per operation.
     """
     
-    results: InCompArg[List[Dict[str, Any]]]
+    results: InCompArg[list]
     
     summary: OutArg[str]
     total_operations: OutArg[int]
