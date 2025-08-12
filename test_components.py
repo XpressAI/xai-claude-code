@@ -66,6 +66,12 @@ Just create the file, don't explain the code."""
         
         print(f"Chat Success: {chat_component.success.value}")
         print(f"Response:\n{chat_component.response.value}")
+        print(f"Input Tokens: {chat_component.input_tokens.value}")
+        print(f"Output Tokens: {chat_component.output_tokens.value}")
+        print(f"Total Cost: ${chat_component.total_cost.value:.6f}")
+        print(f"Files Edited: {chat_component.files_edited.value}")
+        print(f"Edit Summary: {chat_component.edit_summary.value}")
+        print(f"Has Errors: {chat_component.has_errors.value}")
         
         # Test 3: Ask Claude to list the files in the directory
         print("\n=== Testing ClaudeCodeChat - List Files ===")
@@ -75,6 +81,7 @@ Just create the file, don't explain the code."""
         
         print(f"List Success: {list_component.success.value}")
         print(f"Files listed:\n{list_component.response.value}")
+        print(f"Total Cost: ${list_component.total_cost.value:.6f}")
         
         # Check if the hello.py file was actually created
         hello_file = os.path.join(test_dir, 'hello.py')
