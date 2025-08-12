@@ -247,6 +247,10 @@ class ClaudeCodeExecute(Component):
         working_dir = get_claude_config(ctx, 'working_dir', os.getcwd())
         timeout = get_claude_config(ctx, 'timeout', 30)
         
+        # Ensure claude command is available in context
+        if 'claude_cmd' not in ctx:
+            ensure_claude_code_available(ctx)
+        
         # Build the full command using the claude path from context
         cmd_parts = [ctx['claude_cmd']]
         if self.command.value:
@@ -404,6 +408,10 @@ class ClaudeCodeChat(Component):
         working_dir = get_claude_config(ctx, 'working_dir', os.getcwd())
         timeout = get_claude_config(ctx, 'timeout', 120)
         
+        # Ensure claude command is available in context
+        if 'claude_cmd' not in ctx:
+            ensure_claude_code_available(ctx)
+        
         # Build command using the claude path from context
         cmd_parts = [ctx['claude_cmd'], "chat"]
         if model:
@@ -467,6 +475,10 @@ class ClaudeCodeFileEdit(Component):
         # Get shared configuration from context
         model = get_claude_config(ctx, 'model')
         timeout = get_claude_config(ctx, 'timeout', 120)
+        
+        # Ensure claude command is available in context
+        if 'claude_cmd' not in ctx:
+            ensure_claude_code_available(ctx)
         
         # Combine file path and instruction into a prompt
         prompt = f"Edit the file {self.file_path.value}: {self.instruction.value}"
@@ -533,6 +545,10 @@ class ClaudeCodeBatch(Component):
         # Get shared configuration from context
         working_dir = get_claude_config(ctx, 'working_dir', os.getcwd())
         timeout = get_claude_config(ctx, 'timeout', 120)
+        
+        # Ensure claude command is available in context
+        if 'claude_cmd' not in ctx:
+            ensure_claude_code_available(ctx)
         
         results = []
         total_tokens = 0
