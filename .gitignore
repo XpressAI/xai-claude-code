@@ -1,0 +1,5 @@
+venv
+__pycache__
+.xircuits
+xai_components
+claude_test_temp
