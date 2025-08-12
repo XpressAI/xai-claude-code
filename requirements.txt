@@ -1,0 +1,5 @@
+# Core dependency for Xircuits components
+xai-components>=0.1.0
+
+# Optional dependencies for enhanced functionality
+# (These are not required but may be useful for certain use cases)
