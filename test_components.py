@@ -33,7 +33,6 @@ def test_claude_components():
         init_component.working_dir.value = test_dir
         init_component.timeout.value = 60
         init_component.api_key.value = None  # Use environment variable
-        init_component.output_format.value = "text"
         init_component.verbose.value = False
         init_component.debug.value = False
         

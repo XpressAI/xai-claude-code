@@ -165,7 +165,6 @@ class ClaudeCodeInit(Component):
     - working_dir: Default working directory for Claude Code operations.
     - timeout: Default timeout in seconds for Claude Code commands.
     - api_key: Optional ANTHROPIC_API_KEY override (will use OAuth/tokens if not provided).
-    - output_format: Output format for --print mode: 'text', 'json', or 'stream-json'.
     - verbose: Enable verbose logging.
     - debug: Enable debug mode.
 
@@ -178,7 +177,6 @@ class ClaudeCodeInit(Component):
     working_dir: InArg[str]
     timeout: InArg[int]
     api_key: InArg[str]
-    output_format: InArg[str]
     verbose: InArg[bool]
     debug: InArg[bool]
     
@@ -196,7 +194,7 @@ class ClaudeCodeInit(Component):
                 'model': self.model.value,
                 'working_dir': self.working_dir.value or os.getcwd(),
                 'timeout': self.timeout.value or 120,
-                'output_format': self.output_format.value or 'text',
+                'output_format': 'json',
                 'verbose': self.verbose.value or False,
                 'debug': self.debug.value or False,
             }
@@ -212,7 +210,7 @@ class ClaudeCodeInit(Component):
 Model: {config['model'] or 'default'}
 Working Directory: {config['working_dir']}
 Timeout: {config['timeout']} seconds
-Output Format: {config['output_format']}
+Output Format: json (required)
 Verbose: {config['verbose']}
 Debug: {config['debug']}
 Claude Command: {ctx['claude_cmd']}"""
@@ -263,7 +261,6 @@ class ClaudeCodeExecute(Component):
         working_dir = get_claude_config(ctx, 'working_dir', os.getcwd())
         timeout = get_claude_config(ctx, 'timeout', 120)
         model = get_claude_config(ctx, 'model')
-        output_format = get_claude_config(ctx, 'output_format', 'text')
         verbose = get_claude_config(ctx, 'verbose', False)
         debug = get_claude_config(ctx, 'debug', False)
         
@@ -289,8 +286,7 @@ class ClaudeCodeExecute(Component):
             cmd_parts.extend(['--model', model])
         if self.print_mode.value is not False:  # Default to True
             cmd_parts.append('--print')
-            if output_format != 'text':
-                cmd_parts.extend(['--output-format', output_format])
+            cmd_parts.extend(['--output-format', 'json'])
         if self.continue_conversation.value:
             cmd_parts.append('--continue')
         if self.resume_session.value:
@@ -365,6 +361,8 @@ class ClaudeCodeAnalyze(Component):
     success: OutArg[bool]
 
     def execute(self, ctx) -> None:
+        import json
+        
         # Ensure Claude Code is available and properly configured
         ensure_claude_code_available(ctx)
         
@@ -380,45 +378,77 @@ class ClaudeCodeAnalyze(Component):
         self.has_errors.value = bool(error_text)
         self.success.value = not bool(error_text)
         
-        # Extract token usage information
-        token_patterns = [
-            r'Input tokens:\s*(\d+)',
-            r'Output tokens:\s*(\d+)',
-            r'Total cost:\s*\$?([\d.]+)',
-            r'(\d+)\s*input\s*tokens',
-            r'(\d+)\s*output\s*tokens'
-        ]
-        
-        for pattern in token_patterns:
-            matches = re.findall(pattern, output_text, re.IGNORECASE)
-            if matches:
-                if 'input' in pattern.lower():
-                    self.input_tokens.value = int(matches[0])
-                elif 'output' in pattern.lower():
-                    self.output_tokens.value = int(matches[0])
-                elif 'cost' in pattern.lower():
-                    self.total_cost.value = float(matches[0])
-        
-        # Extract file edit information
-        file_patterns = [
-            r'Edited:\s*([^\n]+)',
-            r'Modified:\s*([^\n]+)',
-            r'Writing to:\s*([^\n]+)',
-            r'Created:\s*([^\n]+)'
-        ]
-        
-        edited_files = set()
-        for pattern in file_patterns:
-            matches = re.findall(pattern, output_text, re.IGNORECASE)
-            edited_files.update(matches)
-        
-        self.files_edited.value = list(edited_files)
-        
-        # Generate edit summary
-        if edited_files:
-            self.edit_summary.value = f"Edited {len(edited_files)} file(s): {', '.join(edited_files)}"
-        else:
-            self.edit_summary.value = "No files were edited"
+        # Try to parse JSON output
+        try:
+            if output_text.strip():
+                data = json.loads(output_text)
+                
+                # Extract usage information from JSON
+                if 'usage' in data:
+                    usage = data['usage']
+                    self.input_tokens.value = usage.get('input_tokens', 0)
+                    self.output_tokens.value = usage.get('output_tokens', 0)
+                    self.total_cost.value = usage.get('total_cost', 0.0)
+                
+                # Extract tool calls and file operations
+                edited_files = set()
+                if 'tool_calls' in data:
+                    for tool_call in data['tool_calls']:
+                        if tool_call.get('name') in ['Edit', 'Write', 'MultiEdit']:
+                            if 'parameters' in tool_call:
+                                file_path = tool_call['parameters'].get('file_path')
+                                if file_path:
+                                    edited_files.add(file_path)
+                
+                self.files_edited.value = list(edited_files)
+                
+                # Generate edit summary
+                if edited_files:
+                    self.edit_summary.value = f"Edited {len(edited_files)} file(s): {', '.join(edited_files)}"
+                else:
+                    self.edit_summary.value = "No files were edited"
+                    
+        except json.JSONDecodeError:
+            # Fallback to text parsing if JSON parsing fails
+            # Extract token usage information using regex patterns
+            token_patterns = [
+                r'Input tokens:\s*(\d+)',
+                r'Output tokens:\s*(\d+)',
+                r'Total cost:\s*\$?([\d.]+)',
+                r'(\d+)\s*input\s*tokens',
+                r'(\d+)\s*output\s*tokens'
+            ]
+            
+            for pattern in token_patterns:
+                matches = re.findall(pattern, output_text, re.IGNORECASE)
+                if matches:
+                    if 'input' in pattern.lower():
+                        self.input_tokens.value = int(matches[0])
+                    elif 'output' in pattern.lower():
+                        self.output_tokens.value = int(matches[0])
+                    elif 'cost' in pattern.lower():
+                        self.total_cost.value = float(matches[0])
+            
+            # Extract file edit information using regex patterns
+            file_patterns = [
+                r'Edited:\s*([^\n]+)',
+                r'Modified:\s*([^\n]+)',
+                r'Writing to:\s*([^\n]+)',
+                r'Created:\s*([^\n]+)'
+            ]
+            
+            edited_files = set()
+            for pattern in file_patterns:
+                matches = re.findall(pattern, output_text, re.IGNORECASE)
+                edited_files.update(matches)
+            
+            self.files_edited.value = list(edited_files)
+            
+            # Generate edit summary
+            if edited_files:
+                self.edit_summary.value = f"Edited {len(edited_files)} file(s): {', '.join(edited_files)}"
+            else:
+                self.edit_summary.value = "No files were edited"
 
 
 @xai_component
@@ -446,7 +476,6 @@ class ClaudeCodeChat(Component):
         model = get_claude_config(ctx, 'model')
         working_dir = get_claude_config(ctx, 'working_dir', os.getcwd())
         timeout = get_claude_config(ctx, 'timeout', 120)
-        output_format = get_claude_config(ctx, 'output_format', 'text')
         verbose = get_claude_config(ctx, 'verbose', False)
         debug = get_claude_config(ctx, 'debug', False)
         
@@ -466,8 +495,7 @@ class ClaudeCodeChat(Component):
             cmd_parts.append('--verbose')
         if model:
             cmd_parts.extend(['--model', model])
-        if output_format != 'text':
-            cmd_parts.extend(['--output-format', output_format])
+        cmd_parts.extend(['--output-format', 'json'])
         
         # Add the prompt
         cmd_parts.append(self.prompt.value)
