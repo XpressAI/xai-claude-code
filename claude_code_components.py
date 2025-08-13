@@ -233,7 +233,6 @@ class ClaudeCodeChat(Component):
     - prompt: The prompt/question to send to Claude.
     - system_prompt: Optional system prompt to append (uses --append-system-prompt).
     - session_id: Optional session ID to resume a conversation (uses --resume).
-    - continue_conversation: Use --continue to continue the most recent conversation.
 
     ##### outPorts:
     - response: Claude's response to the prompt.
@@ -251,7 +250,6 @@ class ClaudeCodeChat(Component):
     prompt: InCompArg[str]
     system_prompt: InArg[str]
     session_id: InArg[str]
-    continue_conversation: InArg[bool]
     
     response: OutArg[str]
     success: OutArg[bool]
@@ -303,9 +301,7 @@ class ClaudeCodeChat(Component):
         cmd_parts.extend(['--output-format', 'json'])
         
         # Add session management options
-        if self.continue_conversation.value:
-            cmd_parts.append('--continue')
-        elif self.session_id.value:
+        if self.session_id.value:
             cmd_parts.extend(['--resume', self.session_id.value])
         
         # Add system prompt if provided
