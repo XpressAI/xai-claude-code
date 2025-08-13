@@ -72,6 +72,7 @@ Just create the file, don't explain the code."""
         print(f"Files Edited: {chat_component.files_edited.value}")
         print(f"Edit Summary: {chat_component.edit_summary.value}")
         print(f"Has Errors: {chat_component.has_errors.value}")
+        print(f"Session ID: {chat_component.session_id_out.value}")
         
         # Test 3: Ask Claude to list the files in the directory
         print("\n=== Testing ClaudeCodeChat - List Files ===")

@@ -231,6 +231,9 @@ class ClaudeCodeChat(Component):
 
     ##### inPorts:
     - prompt: The prompt/question to send to Claude.
+    - system_prompt: Optional system prompt to append (uses --append-system-prompt).
+    - session_id: Optional session ID to resume a conversation (uses --resume).
+    - continue_conversation: Use --continue to continue the most recent conversation.
 
     ##### outPorts:
     - response: Claude's response to the prompt.
@@ -242,9 +245,13 @@ class ClaudeCodeChat(Component):
     - edit_summary: Summary of edits made.
     - has_errors: Boolean indicating if there were errors.
     - raw_output: The raw JSON output from Claude Code.
+    - session_id_out: The session ID of this conversation for future resumption.
     """
     
     prompt: InCompArg[str]
+    system_prompt: InArg[str]
+    session_id: InArg[str]
+    continue_conversation: InArg[bool]
     
     response: OutArg[str]
     success: OutArg[bool]
@@ -255,6 +262,7 @@ class ClaudeCodeChat(Component):
     edit_summary: OutArg[str]
     has_errors: OutArg[bool]
     raw_output: OutArg[str]
+    session_id_out: OutArg[str]
 
     def execute(self, ctx) -> None:
         import json
@@ -274,6 +282,7 @@ class ClaudeCodeChat(Component):
         self.edit_summary.value = ""
         self.has_errors.value = False
         self.raw_output.value = ""
+        self.session_id_out.value = ""
         
         # Ensure claude command is available in context
         if 'claude_cmd' not in ctx:
@@ -292,6 +301,16 @@ class ClaudeCodeChat(Component):
         if model:
             cmd_parts.extend(['--model', model])
         cmd_parts.extend(['--output-format', 'json'])
+        
+        # Add session management options
+        if self.continue_conversation.value:
+            cmd_parts.append('--continue')
+        elif self.session_id.value:
+            cmd_parts.extend(['--resume', self.session_id.value])
+        
+        # Add system prompt if provided
+        if self.system_prompt.value:
+            cmd_parts.extend(['--append-system-prompt', self.system_prompt.value])
         
         # Add the prompt
         cmd_parts.append(self.prompt.value)
@@ -334,6 +353,9 @@ class ClaudeCodeChat(Component):
                     
                     # Extract cost from root level
                     self.total_cost.value = data.get('total_cost_usd', 0.0)
+                    
+                    # Extract session ID for future resumption
+                    self.session_id_out.value = data.get('session_id', '')
                     
                     # Extract tool calls and file operations
                     edited_files = set()
